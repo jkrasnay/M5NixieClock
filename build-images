@@ -1,0 +1,203 @@
+#!/usr/bin/env bb
+
+;; Build Script
+;;
+;; This script builds the nixie tube images used by project. It is written in
+;; Babashka.
+;;
+;; https://github.com/babashka/babashka
+;;
+;; Requirements:
+;;
+;; You'll need the following tools installed and on your path
+;;
+;; - Babashka (`bb`)
+;; - ImageMagick (`convert`)
+;; - Arduino CLI (`arduino-cli`)
+;;
+;; What it Does:
+;;
+;; This script takes the raw Nixie tube images (images/nixie-3407*)
+;; and uses ImageMagick `convert` to crop and scale them to the required
+;; sizes, producing other images in the `images` directory.
+;;
+;; It then creates `nixie.h` and `nixie.cpp`, which contain C byte arrays
+;; corresponding to the Nixie images.
+;;
+
+(ns build-images
+  (:require
+    [clojure.string :as str]
+    [clojure.java.io :as io]
+    [babashka.process :refer [check process]]))
+
+
+;;============================================================
+;; Crop, resize, and convert Nixie images to nixie.c
+;;
+
+(defn convert-image
+  "Convert an image using the ImageMagick `convert` image.
+
+  `from` is the name of the source image.
+  `to` is the name of the target image.
+  `opts` are a list of options as follows.
+
+  Options
+
+  :crop      | Seq of width, height, x-offset, y-offset used to crop the image.
+  :resize    | Seq of width, height used to resize the image.
+  :fill-area | If true, when resizing the image fills and may overflow the resize area.
+  "
+  [from to {:keys [crop
+                   resize
+                   fill-area]}]
+  (let [crop (when crop
+               (apply format "%sx%s+%s+%s" crop))
+        resize (when resize
+                 (apply format "%sx%s" resize))
+        resize (if fill-area
+                 (str resize "^")
+                 resize)
+        cmd (cond-> ["convert" from]
+
+              crop
+              (into ["-crop" crop])
+
+              resize
+              (into ["-resize" resize])
+
+              true
+              (conj to))]
+    (-> (process cmd) check)))
+
+
+(def core2-size [320 240])
+
+(def outer-size [852 1280])
+
+(def inner-size [260 420])
+
+(def target-width ; 64
+  (let [[w] core2-size]
+    (int (/ (* w 0.8) 4))))
+
+(def stock-images
+  ["nixie-3407303_1280.jpg"
+   "nixie-3407302_1280.jpg"
+   "nixie-3407304_1280.jpg"
+   "nixie-3407305_1280.jpg"
+   "nixie-3407306_1280.jpg"
+   "nixie-3407307_1280.jpg"
+   "nixie-3407309_1280.jpg"
+   "nixie-3407310_1280.jpg"
+   "nixie-3407311_1280.jpg"
+   "nixie-3407312_1280.jpg"])
+
+(defn offset
+  [outer inner]
+  (/ (- outer inner) 2))
+
+
+
+#_(let [width target-width
+        crop (into inner-size
+                   (map offset outer-size inner-size))]
+    (convert-image "nixie-3407302_1280.jpg" "nixie-64-0.jpg" {:crop crop
+                                                              :resize [width width]
+                                                              :fill-area true}))
+
+(defn resize-nixie-images
+  "Create a set of nixie images with the given width."
+  [width]
+  (let [crop (into inner-size
+                   (map offset outer-size inner-size))]
+    (->> stock-images
+         (map-indexed (fn [i src]
+                        (convert-image (str "images/" src)
+                                       (format "images/nixie-%s-%s.jpg" width i)
+                                       {:crop crop
+                                        :resize [width width]
+                                        :fill-area true})))
+         doall)))
+
+#_(resize-nixie-images 64)
+#_(resize-nixie-images 24)
+
+(defn print-c-byte-array
+  [file-name var-name]
+  (let [f (java.io.File. file-name)
+        ary (byte-array (.length f))
+        is (io/input-stream f)]
+    (.read is ary)
+    (.close is)
+    (println (str "const uint8_t " var-name "[] = {"))
+    (println (str/join ",\n"
+                       (for [row (partition-all 16 ary)]
+                         (str/join ", " (for [b row] (format "0x%02x" b))))))
+    (println "};")
+    (println)))
+
+#_(print-c-byte-array "nixie-24-0.jpg")
+
+(defn create-nixie-c
+  []
+  (spit "nixie.cpp"
+        (with-out-str
+          (println "#include <stdint.h>")
+          (println "#include \"nixie.h\"")
+          (println)
+          (doseq [width [24 64]
+                  i (range 10)]
+            (print-c-byte-array (format "images/nixie-%d-%d.jpg" width i)
+                                (format "nixie_%d_%d" width i)))
+          (doseq [width [24 64]]
+            (println (str "image nixie_" width "[] = {"))
+            (doseq [i (range 10)
+                    :let [file-name (format "images/nixie-%d-%d.jpg" width i)]]
+              (printf "    { nixie_%d_%d, %d },\n" width i (.length (io/file file-name))))
+            (println "};")
+            (println))))
+  (spit "nixie.h"
+        (with-out-str
+          (println "struct image")
+          (println "{")
+          (println "    uint8_t* bytes;")
+          (println "    uint16_t size;")
+          (println "};")
+          (println)
+          (println "extern image nixie_24[];")
+          (println "extern image nixie_64[];"))))
+
+
+(defn create-nixie-html
+  "Creates a sample HTML file containing the scaled images."
+  []
+  (spit "nixie.html"
+        (with-out-str
+          (println "<div style='position:absolute; background-color: black; width: 320px; height: 240px'>")
+          (println "<div>")
+          (doseq [i (range 10)]
+            (printf "<img src='images/nixie-%d-%d.jpg'>" 24 i))
+          (println "</div>")
+          (println "<div>")
+          (doseq [i (range 5)]
+            (printf "<img src='images/nixie-%d-%d.jpg'>" 64 i))
+          (println "</div>")
+          (println "<div>")
+          (doseq [i (range 5 10)]
+            (printf "<img src='images/nixie-%d-%d.jpg'>" 64 i))
+          (println "</div>")
+          )))
+
+#_(create-nixie-c)
+#_(create-nixie-html)
+
+
+
+
+(when (= *file* (System/getProperty "babashka.file"))
+  (create-nixie-c))
+
+
+;; vim: ft=clojure:
