@@ -6,3 +6,5 @@ link:https://m5stack.com/products/m5stack-core2-esp32-iot-development-kit[M5Stac
 Core2] device.
 
 image::nixie-clock.jpg[alt=Nixie Clock,width=300,align="center"]
+
+This software licensed under the link:LICENSE.md[MIT license].
